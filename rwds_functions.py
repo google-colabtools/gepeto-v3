@@ -4,7 +4,6 @@ import subprocess
 import threading
 import requests
 import json
-import platform
 from huggingface_hub import HfApi
 from dotenv import load_dotenv
 #planilhas
@@ -207,38 +206,44 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 def curl_with_proxy_fallback(url, output, host="127.0.0.1", port=3128, timeout=2):
     max_retries = 3
     retry_delay = 5
-    
+    last_result = None
+    last_cmd = None
+
+    proxy_available = False
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            proxy_available = True
+    except Exception:
+        proxy_available = False
+
+    commands = []
+    if proxy_available:
+        commands.append(("proxy", f'curl --connect-timeout 30 --max-time 60 -o "{output}" "{url}" --proxy {host}:{port}'))
+    commands.append(("direct", f'curl --connect-timeout 30 --max-time 60 -o "{output}" "{url}"'))
+
     for attempt in range(max_retries):
-        try:
-            # Try with proxy first if available
+        for mode, cmd in commands:
             try:
-                with socket.create_connection((host, port), timeout=timeout):
-                    print(f"🔗 Usando bypass para download: {url}")
-                    cmd = f'curl --connect-timeout 30 --max-time 60 --retry 3 -o "{output}" "{url}" --proxy {host}:{port}'
-            except Exception:
-                print(f"🌐 Usando conexão direta para: {url}")
-                cmd = f'curl --connect-timeout 30 --max-time 60 --retry 3 -o "{output}" "{url}"'
-            
-            # Execute the command
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                print(f"✅ Successfully downloaded: {url}")
-                return
-            else:
-                print(f"⚠️ Attempt {attempt + 1}/{max_retries} failed: {result.stderr}")
-                if attempt < max_retries - 1:
-                    print(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    
-        except Exception as e:
-            print(f"⚠️ Exception on attempt {attempt + 1}/{max_retries}: {e}")
-            if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...")
-                time.sleep(retry_delay)
-    
+                label = f"🔗 Usando bypass para download" if mode == "proxy" else "🌐 Usando conexão direta para"
+                print(f"{label}: {url}")
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                last_result = result
+                last_cmd = cmd
+
+                if result.returncode == 0:
+                    print(f"✅ Successfully downloaded: {url}")
+                    return
+                else:
+                    print(f"⚠️ Attempt {attempt + 1}/{max_retries} [{mode}] failed: {result.stderr}")
+            except Exception as e:
+                print(f"⚠️ Exception on attempt {attempt + 1}/{max_retries} [{mode}]: {e}")
+
+        if attempt < max_retries - 1:
+            print(f"Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+
     # If all attempts failed, raise the last error
-    raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    raise subprocess.CalledProcessError(last_result.returncode, last_cmd, last_result.stdout, last_result.stderr)
 
 def get_sheets_service():
     """Autentica com a Service Account e retorna o serviço da API do Google Sheets."""
